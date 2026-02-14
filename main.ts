@@ -1,24 +1,72 @@
 import { App, staticFiles } from "fresh";
-import { define, type State } from "./utils.ts";
+import {
+  define,
+  getSession,
+  getSessionIdFromCookie,
+  getUserById,
+  isPublicPath,
+  type State,
+} from "./utils.ts";
 
 export const app = new App<State>();
 
+// ─── Serve static files from /public as /public/* ───────────────────────────
 app.use(staticFiles());
 
-// this is the same as the /api/:name route defined via a file. feel free to delete this!
-app.get("/api2/:name", (ctx) => {
-  const name = ctx.params.name;
-  return new Response(
-    `Hello, ${name.charAt(0).toUpperCase() + name.slice(1)}!`,
-  );
-});
+// ─── Auth Middleware ─────────────────────────────────────────────────────────
+// Runs on every request: resolves session from cookie, protects auth routes
+const authMiddleware = define.middleware((ctx) => {
+  const cookieHeader = ctx.req.headers.get("cookie");
+  const sessionId = getSessionIdFromCookie(cookieHeader);
 
-// this can also be defined via a file. feel free to delete this!
-const exampleLoggerMiddleware = define.middleware((ctx) => {
-  console.log(`${ctx.req.method} ${ctx.req.url}`);
+  // Default state
+  ctx.state.title = "Pointy";
+  ctx.state.session = null;
+  ctx.state.user = null;
+
+  if (sessionId) {
+    const session = getSession(sessionId);
+    if (session) {
+      ctx.state.session = session;
+      ctx.state.user = getUserById(session.userId);
+    }
+  }
+
+  // Check if route requires authentication
+  const url = new URL(ctx.req.url);
+  const pathname = url.pathname;
+
+  if (!isPublicPath(pathname) && !ctx.state.session) {
+    // Redirect unauthenticated users to login
+    return new Response(null, {
+      status: 302,
+      headers: { Location: "/" },
+    });
+  }
+
+  // If authenticated user visits login page, redirect to home
+  if (pathname === "/" && ctx.state.session) {
+    return new Response(null, {
+      status: 302,
+      headers: { Location: "/home" },
+    });
+  }
+
   return ctx.next();
 });
-app.use(exampleLoggerMiddleware);
 
-// Include file-system based routes here
+app.use(authMiddleware);
+
+// ─── Request Logger (dev) ───────────────────────────────────────────────────
+const loggerMiddleware = define.middleware((ctx) => {
+  const start = Date.now();
+  const result = ctx.next();
+  const ms = Date.now() - start;
+  console.log(`${ctx.req.method} ${new URL(ctx.req.url).pathname} ${ms}ms`);
+  return result;
+});
+
+app.use(loggerMiddleware);
+
+// ─── File-system routes ─────────────────────────────────────────────────────
 app.fsRoutes();

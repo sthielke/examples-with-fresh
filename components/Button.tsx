@@ -2,16 +2,30 @@ import type { ComponentChildren } from "preact";
 
 export interface ButtonProps {
   id?: string;
+  type?: "button" | "submit" | "reset";
   onClick?: () => void;
   children?: ComponentChildren;
   disabled?: boolean;
+  variant?: "primary" | "outline" | "success" | "danger";
+  size?: "sm" | "md";
+  class?: string;
+  style?: string;
 }
 
 export function Button(props: ButtonProps) {
-  return (
-    <button
-      {...props}
-      class="px-2 py-1 border-gray-500 border-2 rounded-sm bg-white hover:bg-gray-200 transition-colors"
-    />
-  );
+  const {
+    variant = "primary",
+    size = "md",
+    class: className = "",
+    ...rest
+  } = props;
+
+  const classes = [
+    "btn",
+    `btn-${variant}`,
+    size === "sm" ? "btn-sm" : "",
+    className,
+  ].filter(Boolean).join(" ");
+
+  return <button {...rest} class={classes} />;
 }

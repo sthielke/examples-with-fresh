@@ -2,7 +2,7 @@
   "nodeModulesDir": "auto",
   "tasks": {
     "check": "deno fmt --check . && deno lint . && deno check",
-    "dev": "deno run -A --watch=static/,routes/ dev.ts",
+    "dev": "deno run -A --watch=static/,public/,routes/ dev.ts",
     "build": "deno run -A dev.ts build",
     "start": "deno serve -A _fresh/server.js",
     "update": "deno run -A -r jsr:@fresh/update ."
@@ -16,10 +16,12 @@
     }
   },
   "exclude": [
-    "**/_fresh/*"
+    "**/_fresh/*",
+    "scripts/*"
   ],
   "imports": {
     "fresh": "jsr:@fresh/core@^2.0.0-alpha.60",
+    "fresh/dev": "jsr:@fresh/core@^2.0.0-alpha.60/dev",
     "preact": "npm:preact@^10.27.1",
     "@preact/signals": "npm:@preact/signals@^2.3.1"
   },

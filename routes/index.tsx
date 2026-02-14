@@ -1,29 +1,27 @@
-import { useSignal } from "@preact/signals";
 import { define } from "../utils.ts";
-import Counter from "../islands/Counter.tsx";
+import LoginForm from "../islands/LoginForm.tsx";
 
-export default define.page(function Home(ctx) {
-  const count = useSignal(3);
-
-  ctx.state.title = count.value + " Fresh Counter" +
-    (Math.abs(count.value) === 1 ? "" : "s");
-
+export default define.page(function LoginPage(_ctx) {
   return (
-    <div class="px-4 py-8 mx-auto fresh-gradient min-h-screen">
-      <div class="max-w-screen-md mx-auto flex flex-col items-center justify-center">
+    <div class="auth-page">
+      <div class="auth-card">
         <img
-          class="my-6"
-          src="/logo.svg"
-          width="128"
-          height="128"
-          alt="the Fresh logo: a sliced lemon dripping with juice"
+          class="auth-logo"
+          src="/pointy_logo_nobg.png"
+          alt="Pointy logo"
         />
-        <h1 class="text-4xl font-bold">Welcome to Fresh</h1>
-        <p class="my-4">
-          Try updating this message in the
-          <code class="mx-2">./routes/index.tsx</code> file, and refresh.
-        </p>
-        <Counter count={count} />
+        <h1 class="auth-title">Pointy</h1>
+        <p class="auth-subtitle">Track your kids' daily wins</p>
+        <LoginForm />
+        <div class="form-footer">
+          <p>
+            Don't have an account?{" "}
+            <a href="/onboard">Create one</a>
+          </p>
+          <p style="margin-top: 8px;">
+            <a href="/forgot">Forgot password?</a>
+          </p>
+        </div>
       </div>
     </div>
   );

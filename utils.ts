@@ -9,6 +9,10 @@ export interface User {
   isFirstLogin: boolean;
   children: Child[];
   createdAt: number;
+  /** "primary" = account owner, "authorized" = invited co-admin */
+  role: "primary" | "authorized";
+  /** If authorized, points to the primary user's ID whose data is shared */
+  linkedAccountId?: string;
 }
 
 export interface Child {
@@ -112,6 +116,7 @@ mockUsers.set("admin", {
   name: "Admin User",
   passwordHash: "password", // plain text for mock
   isFirstLogin: true,
+  role: "primary",
   children: [
     {
       id: "child_001",
@@ -191,6 +196,7 @@ export function registerUser(
   email: string,
   password: string,
   name: string,
+  linkedAccountId?: string,
 ): User | null {
   if (mockUsers.has(email)) return null;
   const user: User & { passwordHash: string } = {
@@ -199,6 +205,8 @@ export function registerUser(
     name,
     passwordHash: password,
     isFirstLogin: true,
+    role: linkedAccountId ? "authorized" : "primary",
+    linkedAccountId: linkedAccountId || undefined,
     children: [],
     createdAt: Date.now(),
   };
@@ -263,12 +271,93 @@ export function consumeResetToken(token: string): string | null {
   return email;
 }
 
+// ─── Invite Tokens (authorized user invites) ────────────────────────────────
+
+interface InviteToken {
+  primaryUserId: string;
+  email: string;
+  createdAt: number;
+  expiresAt: number;
+}
+
+const inviteTokens: Map<string, InviteToken> = new Map();
+const INVITE_TOKEN_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+export function createInviteToken(
+  primaryUserId: string,
+  email: string,
+): string {
+  const token = crypto.randomUUID();
+  inviteTokens.set(token, {
+    primaryUserId,
+    email,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + INVITE_TOKEN_DURATION_MS,
+  });
+  return token;
+}
+
+export function validateInviteToken(
+  token: string,
+): { primaryUserId: string; email: string } | null {
+  const entry = inviteTokens.get(token);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    inviteTokens.delete(token);
+    return null;
+  }
+  return { primaryUserId: entry.primaryUserId, email: entry.email };
+}
+
+export function consumeInviteToken(
+  token: string,
+): { primaryUserId: string; email: string } | null {
+  const result = validateInviteToken(token);
+  if (result) {
+    inviteTokens.delete(token);
+  }
+  return result;
+}
+
+// ─── Linked Account Resolution ───────────────────────────────────────────────
+
+/**
+ * Resolves the effective user ID for data operations.
+ * If the user is an authorized user, returns the primary user's ID.
+ * Otherwise returns the user's own ID.
+ */
+export function resolveUserId(userId: string): string {
+  for (const record of mockUsers.values()) {
+    if (record.id === userId && record.linkedAccountId) {
+      return record.linkedAccountId;
+    }
+  }
+  return userId;
+}
+
 export function getUserById(id: string): User | null {
   for (const record of mockUsers.values()) {
     if (record.id === id) {
       const { passwordHash: _, ...user } = record;
+      // If authorized user, merge in the primary user's children
+      if (user.linkedAccountId) {
+        const primary = getPrimaryUserRecord(user.linkedAccountId);
+        if (primary) {
+          return { ...user, children: primary.children };
+        }
+      }
       return user;
     }
+  }
+  return null;
+}
+
+/** Internal: get the raw record for a primary user by ID */
+function getPrimaryUserRecord(
+  userId: string,
+): (User & { passwordHash: string }) | null {
+  for (const record of mockUsers.values()) {
+    if (record.id === userId) return record;
   }
   return null;
 }
@@ -317,8 +406,9 @@ export function addChildToUser(
   avatarIcon?: string,
   avatarUrl?: string,
 ): Child | null {
+  const effectiveId = resolveUserId(userId);
   for (const record of mockUsers.values()) {
-    if (record.id === userId) {
+    if (record.id === effectiveId) {
       const child: Child = {
         id: `child_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         name,
@@ -362,8 +452,9 @@ export function cashInPoints(childId: string): boolean {
 }
 
 export function removeChild(userId: string, childId: string): boolean {
+  const effectiveId = resolveUserId(userId);
   for (const record of mockUsers.values()) {
-    if (record.id === userId) {
+    if (record.id === effectiveId) {
       const idx = record.children.findIndex((c) => c.id === childId);
       if (idx !== -1) {
         record.children.splice(idx, 1);

@@ -1,4 +1,5 @@
 import { createResetToken, define, findUserByEmail } from "../../../utils.ts";
+import { sendPasswordResetEmail } from "../../../email.ts";
 
 export const handler = define.handlers({
   async POST(ctx) {
@@ -18,7 +19,9 @@ export const handler = define.handlers({
 
       if (!user) {
         return new Response(
-          JSON.stringify({ error: "No account found with that email address" }),
+          JSON.stringify({
+            error: "No account found with that email address",
+          }),
           { status: 404, headers: { "Content-Type": "application/json" } },
         );
       }
@@ -33,24 +36,27 @@ export const handler = define.handlers({
         );
       }
 
-      // Build the reset URL
+      // Build the reset URL and send the email
       const url = new URL(ctx.req.url);
       const resetUrl = `${url.origin}/reset?token=${token}`;
 
-      // In a real app we'd send this via email.
-      // For local dev, log it to the console AND return it in the response.
-      console.log(`\n========================================`);
-      console.log(`  PASSWORD RESET LINK for ${email}`);
-      console.log(`  ${resetUrl}`);
-      console.log(`========================================\n`);
+      const sent = await sendPasswordResetEmail(email, resetUrl);
+
+      if (!sent) {
+        return new Response(
+          JSON.stringify({
+            error:
+              "Failed to send reset email. Please try again later.",
+          }),
+          { status: 500, headers: { "Content-Type": "application/json" } },
+        );
+      }
 
       return new Response(
         JSON.stringify({
           success: true,
           message:
             "A password reset link has been sent to your email. Check your inbox.",
-          // DEV ONLY: include the link so it's usable in the browser during local dev
-          _dev_resetUrl: resetUrl,
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );

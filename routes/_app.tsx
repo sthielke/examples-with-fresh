@@ -207,6 +207,34 @@ export default define.page(function App({ Component, state }) {
             color: var(--color-text-light);
           }
 
+          /* Add authorized user button */
+          .add-authorized-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: none;
+            border: 2px dashed var(--color-border);
+            border-radius: 10px;
+            color: var(--color-primary);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            padding: 10px 16px;
+            width: 100%;
+            justify-content: center;
+            transition: all 0.15s;
+          }
+          .add-authorized-btn:hover {
+            border-color: var(--color-primary);
+            background: #F8F6FF;
+          }
+          .authorized-user-section {
+            background: #F8F6FF;
+            border: 1px solid #E8E4F8;
+            border-radius: 10px;
+            padding: 14px;
+          }
+
           .alert {
             padding: 12px 16px;
             border-radius: 8px;

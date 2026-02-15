@@ -1,7 +1,14 @@
-import { define, getChildById } from "../../../utils.ts";
+import { define, getChildById, verifyChildOwnership } from "../../../utils.ts";
 
 export const handler = define.handlers({
-  GET(ctx) {
+  async GET(ctx) {
+    if (!ctx.state.session) {
+      return new Response(
+        JSON.stringify({ error: "Not authenticated" }),
+        { status: 401, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
     const childId = ctx.params.childId;
 
     if (!childId) {
@@ -11,7 +18,19 @@ export const handler = define.handlers({
       );
     }
 
-    const child = getChildById(childId);
+    // Verify the authenticated user owns this child
+    const owns = await verifyChildOwnership(
+      ctx.state.session.userId,
+      childId,
+    );
+    if (!owns) {
+      return new Response(
+        JSON.stringify({ error: "Child not found" }),
+        { status: 404, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    const child = await getChildById(childId);
 
     if (!child) {
       return new Response(

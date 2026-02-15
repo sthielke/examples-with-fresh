@@ -1,8 +1,20 @@
-import { define, getChildById, toggleTask } from "../../../utils.ts";
+import {
+  define,
+  getChildById,
+  toggleTask,
+  verifyChildOwnership,
+} from "../../../utils.ts";
 
 export const handler = define.handlers({
   async POST(ctx) {
     try {
+      if (!ctx.state.session) {
+        return new Response(
+          JSON.stringify({ error: "Not authenticated" }),
+          { status: 401, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
       const body = await ctx.req.json();
       const { childId, taskId } = body;
 
@@ -13,7 +25,19 @@ export const handler = define.handlers({
         );
       }
 
-      const task = toggleTask(childId, taskId);
+      // Verify the authenticated user owns this child
+      const owns = await verifyChildOwnership(
+        ctx.state.session.userId,
+        childId,
+      );
+      if (!owns) {
+        return new Response(
+          JSON.stringify({ error: "Task not found" }),
+          { status: 404, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      const task = await toggleTask(childId, taskId);
       if (!task) {
         return new Response(
           JSON.stringify({ error: "Task not found" }),
@@ -21,7 +45,7 @@ export const handler = define.handlers({
         );
       }
 
-      const child = getChildById(childId);
+      const child = await getChildById(childId);
 
       return new Response(
         JSON.stringify({

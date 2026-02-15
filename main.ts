@@ -13,9 +13,31 @@ export const app = new App<State>();
 // ─── Serve static files from /public as /public/* ───────────────────────────
 app.use(staticFiles());
 
+// ─── Security Headers Middleware ─────────────────────────────────────────────
+const securityHeadersMiddleware = define.middleware(async (ctx) => {
+  const response = await ctx.next();
+  response.headers.set("X-Content-Type-Options", "nosniff");
+  response.headers.set("X-Frame-Options", "DENY");
+  response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  response.headers.set(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=()",
+  );
+  // HSTS: tell browsers to always use HTTPS (1 year)
+  if (Deno.env.get("DENO_DEPLOYMENT_ID")) {
+    response.headers.set(
+      "Strict-Transport-Security",
+      "max-age=31536000; includeSubDomains",
+    );
+  }
+  return response;
+});
+
+app.use(securityHeadersMiddleware);
+
 // ─── Auth Middleware ─────────────────────────────────────────────────────────
 // Runs on every request: resolves session from cookie, protects auth routes
-const authMiddleware = define.middleware((ctx) => {
+const authMiddleware = define.middleware(async (ctx) => {
   const cookieHeader = ctx.req.headers.get("cookie");
   const sessionId = getSessionIdFromCookie(cookieHeader);
 
@@ -25,10 +47,10 @@ const authMiddleware = define.middleware((ctx) => {
   ctx.state.user = null;
 
   if (sessionId) {
-    const session = getSession(sessionId);
+    const session = await getSession(sessionId);
     if (session) {
       ctx.state.session = session;
-      ctx.state.user = getUserById(session.userId);
+      ctx.state.user = await getUserById(session.userId);
     }
   }
 

@@ -1,7 +1,7 @@
 import { define, getUserById } from "../../../utils.ts";
 
 export const handler = define.handlers({
-  GET(ctx) {
+  async GET(ctx) {
     if (!ctx.state.session) {
       return new Response(
         JSON.stringify({ error: "Not authenticated" }),
@@ -9,7 +9,7 @@ export const handler = define.handlers({
       );
     }
 
-    const user = getUserById(ctx.state.session.userId);
+    const user = await getUserById(ctx.state.session.userId);
     if (!user) {
       return new Response(
         JSON.stringify({ error: "User not found" }),

@@ -24,13 +24,27 @@ export const handler = define.handlers({
 
         const file = formData.get("avatarFile") as File | null;
         if (file && file.size > 0) {
-          // For the mock, store as a data URL
+          // Validate file size (max 2MB)
+          const MAX_AVATAR_SIZE = 2 * 1024 * 1024;
+          if (file.size > MAX_AVATAR_SIZE) {
+            return new Response(
+              JSON.stringify({ error: "Avatar image must be under 2MB" }),
+              { status: 400, headers: { "Content-Type": "application/json" } },
+            );
+          }
+          // Validate MIME type (images only)
+          const ALLOWED_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+          if (!ALLOWED_TYPES.includes(file.type)) {
+            return new Response(
+              JSON.stringify({ error: "Avatar must be a PNG, JPEG, GIF, or WebP image" }),
+              { status: 400, headers: { "Content-Type": "application/json" } },
+            );
+          }
           const buffer = await file.arrayBuffer();
           const base64 = btoa(
             String.fromCharCode(...new Uint8Array(buffer)),
           );
-          const mimeType = file.type || "image/png";
-          avatarUrl = `data:${mimeType};base64,${base64}`;
+          avatarUrl = `data:${file.type};base64,${base64}`;
         }
       } else {
         // JSON body
@@ -47,7 +61,7 @@ export const handler = define.handlers({
         );
       }
 
-      const child = addChildToUser(
+      const child = await addChildToUser(
         ctx.state.session.userId,
         name.trim(),
         avatarIcon,

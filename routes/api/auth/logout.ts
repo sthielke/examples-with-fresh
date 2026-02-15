@@ -6,12 +6,12 @@ import {
 } from "../../../utils.ts";
 
 export const handler = define.handlers({
-  POST(ctx) {
+  async POST(ctx) {
     const cookieHeader = ctx.req.headers.get("cookie");
     const sessionId = getSessionIdFromCookie(cookieHeader);
 
     if (sessionId) {
-      destroySession(sessionId);
+      await destroySession(sessionId);
     }
 
     return new Response(null, {

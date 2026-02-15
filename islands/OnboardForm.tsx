@@ -71,6 +71,13 @@ export default function OnboardForm(props: OnboardFormProps) {
         return;
       }
 
+      // If there was an invite warning, show it briefly before redirecting
+      if (data.inviteWarning) {
+        error.value = "";
+        loading.value = false;
+        alert(data.inviteWarning);
+      }
+
       globalThis.location.href = data.redirect || "/welcome";
     } catch {
       error.value = "Something went wrong. Please try again.";

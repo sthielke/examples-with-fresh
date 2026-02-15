@@ -18,7 +18,7 @@ export const handler = define.handlers({
         );
       }
 
-      const user = authenticate(email, password);
+      const user = await authenticate(email, password);
       if (!user) {
         return new Response(
           JSON.stringify({ error: "Invalid email or password" }),
@@ -26,7 +26,7 @@ export const handler = define.handlers({
         );
       }
 
-      const sessionId = createSession(user);
+      const sessionId = await createSession(user);
       const redirect = user.isFirstLogin ? "/welcome" : "/home";
 
       return new Response(

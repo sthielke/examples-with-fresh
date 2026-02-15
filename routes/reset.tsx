@@ -1,10 +1,10 @@
 import { define, validateResetToken } from "../utils.ts";
 import ResetForm from "../islands/ResetForm.tsx";
 
-export default define.page(function ResetPage(ctx) {
+export default define.page(async function ResetPage(ctx) {
   const url = new URL(ctx.req.url);
   const token = url.searchParams.get("token") || "";
-  const email = token ? validateResetToken(token) : null;
+  const email = token ? await validateResetToken(token) : null;
 
   // No token or expired/invalid token
   if (!token || !email) {

@@ -21,7 +21,7 @@ export const handler = define.handlers({
       }
 
       // Validate and consume the token (one-time use)
-      const email = consumeResetToken(token);
+      const email = await consumeResetToken(token);
 
       if (!email) {
         return new Response(
@@ -32,7 +32,7 @@ export const handler = define.handlers({
         );
       }
 
-      const success = resetPassword(email, newPassword);
+      const success = await resetPassword(email, newPassword);
 
       if (!success) {
         return new Response(

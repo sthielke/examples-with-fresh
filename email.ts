@@ -1,3 +1,14 @@
+// ─── HTML Escaping ───────────────────────────────────────────────────────────
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 // ─── Configuration ───────────────────────────────────────────────────────────
 // Uses Resend's REST API directly (no npm SDK needed -- works on Deno Deploy)
 
@@ -24,6 +35,9 @@ async function sendEmail(
 ): Promise<boolean> {
   try {
     const apiKey = getApiKey();
+
+    console.log(`[Email] Sending to: ${to}, subject: "${subject}", from: ${FROM_EMAIL}`);
+
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
@@ -40,13 +54,15 @@ async function sendEmail(
 
     if (!res.ok) {
       const body = await res.text();
-      console.error(`Resend API error (${res.status}):`, body);
+      console.error(`[Email] Resend API error (${res.status}): ${body}`);
       return false;
     }
 
+    const result = await res.json();
+    console.log(`[Email] Sent successfully, id: ${result.id}`);
     return true;
   } catch (err) {
-    console.error("Failed to send email:", err);
+    console.error("[Email] Failed to send:", err);
     return false;
   }
 }
@@ -99,6 +115,7 @@ export async function sendPasswordResetEmail(
   to: string,
   resetUrl: string,
 ): Promise<boolean> {
+  const safeUrl = escapeHtml(resetUrl);
   const html = emailWrapper(`
     <h2 style="margin: 0 0 12px; font-size: 22px; font-weight: 700; color: #2D3436;">
       Reset Your Password
@@ -110,7 +127,7 @@ export async function sendPasswordResetEmail(
     <table width="100%" cellpadding="0" cellspacing="0">
       <tr>
         <td align="center" style="padding: 4px 0 24px;">
-          <a href="${resetUrl}"
+          <a href="${safeUrl}"
              style="display: inline-block; background: #6C5CE7; color: #FFFFFF; font-size: 16px; font-weight: 700; text-decoration: none; padding: 14px 36px; border-radius: 10px;">
             Reset Password
           </a>
@@ -121,7 +138,7 @@ export async function sendPasswordResetEmail(
       If you didn't request a password reset, no action is needed. Your password will remain unchanged.
     </p>
     <p style="margin: 16px 0 0; font-size: 12px; color: #BBB; word-break: break-all;">
-      Or copy this link: ${resetUrl}
+      Or copy this link: ${safeUrl}
     </p>
   `);
 
@@ -135,18 +152,20 @@ export async function sendInviteEmail(
   inviteUrl: string,
   inviterName: string,
 ): Promise<boolean> {
+  const safeName = escapeHtml(inviterName);
+  const safeUrl = escapeHtml(inviteUrl);
   const html = emailWrapper(`
     <h2 style="margin: 0 0 12px; font-size: 22px; font-weight: 700; color: #2D3436;">
       You're Invited to Pointy!
     </h2>
     <p style="margin: 0 0 24px; font-size: 15px; color: #636E72; line-height: 1.6;">
-      <strong>${inviterName}</strong> has invited you to join their Pointy account
+      <strong>${safeName}</strong> has invited you to join their Pointy account
       as an authorized user. You'll be able to add and remove points for their children.
     </p>
     <table width="100%" cellpadding="0" cellspacing="0">
       <tr>
         <td align="center" style="padding: 4px 0 24px;">
-          <a href="${inviteUrl}"
+          <a href="${safeUrl}"
              style="display: inline-block; background: #6C5CE7; color: #FFFFFF; font-size: 16px; font-weight: 700; text-decoration: none; padding: 14px 36px; border-radius: 10px;">
             Create Your Account
           </a>
@@ -157,13 +176,13 @@ export async function sendInviteEmail(
       If you weren't expecting this invitation, you can safely ignore this email.
     </p>
     <p style="margin: 16px 0 0; font-size: 12px; color: #BBB; word-break: break-all;">
-      Or copy this link: ${inviteUrl}
+      Or copy this link: ${safeUrl}
     </p>
   `);
 
   return await sendEmail(
     to,
-    `${inviterName} invited you to Pointy`,
+    `${safeName} invited you to Pointy`,
     html,
   );
 }

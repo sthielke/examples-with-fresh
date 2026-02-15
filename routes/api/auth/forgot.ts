@@ -1,6 +1,10 @@
 import { createResetToken, define, findUserByEmail } from "../../../utils.ts";
 import { sendPasswordResetEmail } from "../../../email.ts";
 
+// Generic success message -- same whether email exists or not (prevents enumeration)
+const SUCCESS_MESSAGE =
+  "If an account with that email exists, a password reset link has been sent. Check your inbox.";
+
 export const handler = define.handlers({
   async POST(ctx) {
     try {
@@ -14,50 +18,23 @@ export const handler = define.handlers({
         );
       }
 
-      // Check if user exists
-      const user = findUserByEmail(email);
+      // Always return the same response to prevent user enumeration.
+      // Only actually send the email if the user exists.
+      const user = await findUserByEmail(email);
 
-      if (!user) {
-        return new Response(
-          JSON.stringify({
-            error: "No account found with that email address",
-          }),
-          { status: 404, headers: { "Content-Type": "application/json" } },
-        );
-      }
-
-      // Generate a unique reset token
-      const token = createResetToken(email);
-
-      if (!token) {
-        return new Response(
-          JSON.stringify({ error: "Could not generate reset link" }),
-          { status: 500, headers: { "Content-Type": "application/json" } },
-        );
-      }
-
-      // Build the reset URL and send the email
-      const url = new URL(ctx.req.url);
-      const resetUrl = `${url.origin}/reset?token=${token}`;
-
-      const sent = await sendPasswordResetEmail(email, resetUrl);
-
-      if (!sent) {
-        return new Response(
-          JSON.stringify({
-            error:
-              "Failed to send reset email. Please try again later.",
-          }),
-          { status: 500, headers: { "Content-Type": "application/json" } },
-        );
+      if (user) {
+        const token = await createResetToken(email);
+        if (token) {
+          const url = new URL(ctx.req.url);
+          const resetUrl = `${url.origin}/reset?token=${token}`;
+          await sendPasswordResetEmail(email, resetUrl);
+          // We intentionally don't check the send result here --
+          // the response is the same either way to prevent enumeration.
+        }
       }
 
       return new Response(
-        JSON.stringify({
-          success: true,
-          message:
-            "A password reset link has been sent to your email. Check your inbox.",
-        }),
+        JSON.stringify({ success: true, message: SUCCESS_MESSAGE }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     } catch {

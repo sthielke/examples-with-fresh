@@ -1,4 +1,4 @@
-#!/usr/bin/env -S deno run -A --watch=static/,routes/
+#!/usr/bin/env -S deno run -A --unstable-kv --watch=static/,routes/
 
 import { Builder } from "fresh/dev";
 

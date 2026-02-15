@@ -1,4 +1,4 @@
-import { cashInPoints, define } from "../../../utils.ts";
+import { cashInPoints, define, verifyChildOwnership } from "../../../utils.ts";
 
 export const handler = define.handlers({
   async POST(ctx) {
@@ -20,7 +20,16 @@ export const handler = define.handlers({
         );
       }
 
-      const success = cashInPoints(childId);
+      // Verify the authenticated user owns this child
+      const owns = await verifyChildOwnership(ctx.state.session.userId, childId);
+      if (!owns) {
+        return new Response(
+          JSON.stringify({ error: "Child not found" }),
+          { status: 404, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      const success = await cashInPoints(childId);
 
       if (!success) {
         return new Response(

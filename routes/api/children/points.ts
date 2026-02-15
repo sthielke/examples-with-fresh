@@ -1,4 +1,4 @@
-import { adjustPoints, define } from "../../../utils.ts";
+import { adjustPoints, define, verifyChildOwnership } from "../../../utils.ts";
 
 export const handler = define.handlers({
   async POST(ctx) {
@@ -20,7 +20,16 @@ export const handler = define.handlers({
         );
       }
 
-      const newPoints = adjustPoints(childId, delta);
+      // Verify the authenticated user owns this child
+      const owns = await verifyChildOwnership(ctx.state.session.userId, childId);
+      if (!owns) {
+        return new Response(
+          JSON.stringify({ error: "Child not found" }),
+          { status: 404, headers: { "Content-Type": "application/json" } },
+        );
+      }
+
+      const newPoints = await adjustPoints(childId, delta);
 
       if (newPoints === null) {
         return new Response(

@@ -20,7 +20,7 @@ export const handler = define.handlers({
         );
       }
 
-      const success = removeChild(ctx.state.session.userId, childId);
+      const success = await removeChild(ctx.state.session.userId, childId);
 
       if (!success) {
         return new Response(

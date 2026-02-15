@@ -2,23 +2,14 @@
   "nodeModulesDir": "auto",
   "tasks": {
     "check": "deno fmt --check . && deno lint . && deno check",
-    "dev": "deno run -A --watch=static/,public/,routes/ dev.ts",
-    "build": "deno run -A dev.ts build",
-    "start": "deno serve -A _fresh/server.js",
-    "update": "deno run -A -r jsr:@fresh/update ."
+    "dev": "deno run -A --unstable-kv --watch=static/,public/,routes/ dev.ts",
+    "build": "deno run -A --unstable-kv dev.ts build",
+    "start": "deno serve -A --unstable-kv _fresh/server.js",
+    "update": "deno run -A -r jsr:@fresh/update .",
+    "preview": "deno run -A main.ts"
   },
-  "lint": {
-    "rules": {
-      "tags": [
-        "fresh",
-        "recommended"
-      ]
-    }
-  },
-  "exclude": [
-    "**/_fresh/*",
-    "scripts/*"
-  ],
+  "lint": { "rules": { "tags": ["fresh", "recommended"] } },
+  "exclude": ["**/_fresh/*", "scripts/*"],
   "imports": {
     "fresh": "jsr:@fresh/core@^2.0.0-alpha.60",
     "fresh/dev": "jsr:@fresh/core@^2.0.0-alpha.60/dev",
@@ -26,21 +17,9 @@
     "@preact/signals": "npm:@preact/signals@^2.3.1"
   },
   "compilerOptions": {
-    "lib": [
-      "dom",
-      "dom.asynciterable",
-      "dom.iterable",
-      "deno.ns"
-    ],
+    "lib": ["dom", "dom.asynciterable", "dom.iterable", "deno.ns"],
     "jsx": "precompile",
     "jsxImportSource": "preact",
-    "jsxPrecompileSkipElements": [
-      "a",
-      "img",
-      "source",
-      "body",
-      "html",
-      "head"
-    ]
+    "jsxPrecompileSkipElements": ["a", "img", "source", "body", "html", "head", "title", "meta", "script", "link", "style", "base", "noscript", "template"]
   }
 }

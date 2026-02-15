@@ -1,5 +1,67 @@
 import { createDefine } from "fresh";
 
+// ─── Password Hashing (Web Crypto PBKDF2 -- no external deps) ───────────────
+
+const HASH_ITERATIONS = 100_000;
+const HASH_KEY_LENGTH = 32; // 256 bits
+
+async function hashPassword(password: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const encoder = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(password),
+    "PBKDF2",
+    false,
+    ["deriveBits"],
+  );
+  const derivedBits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt, iterations: HASH_ITERATIONS, hash: "SHA-256" },
+    keyMaterial,
+    HASH_KEY_LENGTH * 8,
+  );
+  const hashArray = new Uint8Array(derivedBits);
+  const saltHex = Array.from(salt).map((b) => b.toString(16).padStart(2, "0")).join("");
+  const hashHex = Array.from(hashArray).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `pbkdf2:${HASH_ITERATIONS}:${saltHex}:${hashHex}`;
+}
+
+async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  // Support legacy plain-text passwords (for migration from old data)
+  if (!stored.startsWith("pbkdf2:")) {
+    return password === stored;
+  }
+  const [, iterStr, saltHex, hashHex] = stored.split(":");
+  const iterations = parseInt(iterStr, 10);
+  const salt = new Uint8Array(
+    saltHex.match(/.{2}/g)!.map((b) => parseInt(b, 16)),
+  );
+  const expectedHash = new Uint8Array(
+    hashHex.match(/.{2}/g)!.map((b) => parseInt(b, 16)),
+  );
+  const encoder = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(password),
+    "PBKDF2",
+    false,
+    ["deriveBits"],
+  );
+  const derivedBits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
+    keyMaterial,
+    expectedHash.length * 8,
+  );
+  const derivedArray = new Uint8Array(derivedBits);
+  // Constant-time comparison to prevent timing attacks
+  if (derivedArray.length !== expectedHash.length) return false;
+  let diff = 0;
+  for (let i = 0; i < derivedArray.length; i++) {
+    diff |= derivedArray[i] ^ expectedHash[i];
+  }
+  return diff === 0;
+}
+
 // ─── Auth & Session Types ───────────────────────────────────────────────────
 
 export interface User {
@@ -13,6 +75,11 @@ export interface User {
   role: "primary" | "authorized";
   /** If authorized, points to the primary user's ID whose data is shared */
   linkedAccountId?: string;
+}
+
+/** Internal record stored in KV (includes password) */
+interface UserRecord extends User {
+  passwordHash: string;
 }
 
 export interface Child {
@@ -104,428 +171,474 @@ export interface State {
 
 export const define = createDefine<State>();
 
-// ─── In-Memory Mock Store ───────────────────────────────────────────────────
+// ─── Deno KV Store ──────────────────────────────────────────────────────────
+//
+// Key structure:
+//   ["users_by_email", email]      -> UserRecord
+//   ["users_by_id", id]            -> email  (secondary index)
+//   ["children_by_id", childId]    -> email  (secondary index)
+//   ["sessions", sessionId]        -> Session  (with expireIn)
+//   ["reset_tokens", token]        -> { email }  (with expireIn)
+//   ["invite_tokens", token]       -> { primaryUserId, email }  (with expireIn)
 
-const mockUsers: Map<string, User & { passwordHash: string }> = new Map();
-const sessions: Map<string, Session> = new Map();
+const kv = await Deno.openKv();
 
-// Seed a default admin user on import
-mockUsers.set("admin", {
-  id: "user_001",
-  email: "admin",
-  name: "Admin User",
-  passwordHash: "password", // plain text for mock
-  isFirstLogin: true,
-  role: "primary",
-  children: [
-    {
-      id: "child_001",
-      name: "Alex",
-      avatarIcon: "\uD83D\uDE80",
-      points: 42,
-      streak: 3,
-      tasks: [
-        {
-          id: "task_001",
-          title: "Brush teeth",
-          description: "Brush teeth morning and night",
-          pointValue: 5,
-          completed: false,
-          category: "hygiene",
-        },
-        {
-          id: "task_002",
-          title: "Make bed",
-          description: "Make your bed before school",
-          pointValue: 3,
-          completed: false,
-          category: "chores",
-        },
-        {
-          id: "task_003",
-          title: "Read for 20 minutes",
-          description: "Read a book for at least 20 minutes",
-          pointValue: 10,
-          completed: false,
-          category: "homework",
-        },
-      ],
-    },
-    {
-      id: "child_002",
-      name: "Jordan",
-      avatarIcon: "\u26BD",
-      points: 28,
-      streak: 1,
-      tasks: [
-        {
-          id: "task_004",
-          title: "Pick up toys",
-          description: "Put all toys back in the toy box",
-          pointValue: 5,
-          completed: false,
-          category: "chores",
-        },
-        {
-          id: "task_005",
-          title: "Say something kind",
-          description: "Give someone a genuine compliment",
-          pointValue: 7,
-          completed: false,
-          category: "kindness",
-        },
-      ],
-    },
-  ],
-  createdAt: Date.now(),
-});
+// ─── Durations ───────────────────────────────────────────────────────────────
 
-// ─── Auth Helpers ───────────────────────────────────────────────────────────
+const SESSION_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
+const RESET_TOKEN_DURATION_MS = 60 * 60 * 1000; // 1 hour
+const INVITE_TOKEN_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-export function authenticate(
-  email: string,
-  password: string,
-): User | null {
-  const record = mockUsers.get(email);
-  if (!record || record.passwordHash !== password) return null;
+// ─── Seed Admin User ─────────────────────────────────────────────────────────
+
+async function seedAdminUser(): Promise<void> {
+  const existing = await kv.get<UserRecord>(["users_by_email", "admin"]);
+  if (existing.value) return; // already seeded
+
+  const adminPassword = Deno.env.get("ADMIN_SEED_PASSWORD") || "password";
+  const hashedPassword = await hashPassword(adminPassword);
+
+  const record: UserRecord = {
+    id: "user_001",
+    email: "admin",
+    name: "Admin User",
+    passwordHash: hashedPassword,
+    isFirstLogin: true,
+    role: "primary",
+    children: [
+      {
+        id: "child_001",
+        name: "Alex",
+        avatarIcon: "\uD83D\uDE80",
+        points: 42,
+        streak: 3,
+        tasks: [
+          { id: "task_001", title: "Brush teeth", description: "Brush teeth morning and night", pointValue: 5, completed: false, category: "hygiene" },
+          { id: "task_002", title: "Make bed", description: "Make your bed before school", pointValue: 3, completed: false, category: "chores" },
+          { id: "task_003", title: "Read for 20 minutes", description: "Read a book for at least 20 minutes", pointValue: 10, completed: false, category: "homework" },
+        ],
+      },
+      {
+        id: "child_002",
+        name: "Jordan",
+        avatarIcon: "\u26BD",
+        points: 28,
+        streak: 1,
+        tasks: [
+          { id: "task_004", title: "Pick up toys", description: "Put all toys back in the toy box", pointValue: 5, completed: false, category: "chores" },
+          { id: "task_005", title: "Say something kind", description: "Give someone a genuine compliment", pointValue: 7, completed: false, category: "kindness" },
+        ],
+      },
+    ],
+    createdAt: Date.now(),
+  };
+
+  await kv.atomic()
+    .set(["users_by_email", "admin"], record)
+    .set(["users_by_id", "user_001"], "admin")
+    .set(["children_by_id", "child_001"], "admin")
+    .set(["children_by_id", "child_002"], "admin")
+    .commit();
+}
+
+// Seed on module load
+await seedAdminUser();
+
+// ─── Internal Helpers ────────────────────────────────────────────────────────
+
+function stripPassword(record: UserRecord): User {
   const { passwordHash: _, ...user } = record;
   return user;
 }
 
-export function registerUser(
+async function getUserRecordByEmail(email: string): Promise<UserRecord | null> {
+  const entry = await kv.get<UserRecord>(["users_by_email", email]);
+  return entry.value;
+}
+
+async function getUserRecordById(id: string): Promise<UserRecord | null> {
+  const emailEntry = await kv.get<string>(["users_by_id", id]);
+  if (!emailEntry.value) return null;
+  return await getUserRecordByEmail(emailEntry.value);
+}
+
+/** Save a user record back to KV (after mutation) */
+async function saveUserRecord(record: UserRecord): Promise<void> {
+  await kv.set(["users_by_email", record.email], record);
+}
+
+// ─── Auth Helpers ───────────────────────────────────────────────────────────
+
+export async function authenticate(
+  email: string,
+  password: string,
+): Promise<User | null> {
+  const record = await getUserRecordByEmail(email);
+  if (!record) return null;
+  const valid = await verifyPassword(password, record.passwordHash);
+  if (!valid) return null;
+
+  // Migrate legacy plain-text passwords to hashed on successful login
+  if (!record.passwordHash.startsWith("pbkdf2:")) {
+    record.passwordHash = await hashPassword(password);
+    await saveUserRecord(record);
+  }
+
+  return stripPassword(record);
+}
+
+export async function registerUser(
   email: string,
   password: string,
   name: string,
   linkedAccountId?: string,
-): User | null {
-  if (mockUsers.has(email)) return null;
-  const user: User & { passwordHash: string } = {
-    id: `user_${Date.now()}`,
+): Promise<User | null> {
+  const existing = await getUserRecordByEmail(email);
+  if (existing) return null;
+
+  const id = `user_${Date.now()}`;
+  const hashedPassword = await hashPassword(password);
+  const record: UserRecord = {
+    id,
     email,
     name,
-    passwordHash: password,
+    passwordHash: hashedPassword,
     isFirstLogin: true,
     role: linkedAccountId ? "authorized" : "primary",
     linkedAccountId: linkedAccountId || undefined,
     children: [],
     createdAt: Date.now(),
   };
-  mockUsers.set(email, user);
-  const { passwordHash: _, ...safeUser } = user;
-  return safeUser;
+
+  await kv.atomic()
+    .set(["users_by_email", email], record)
+    .set(["users_by_id", id], email)
+    .commit();
+
+  return stripPassword(record);
 }
 
-export function findUserByEmail(email: string): User | null {
-  const record = mockUsers.get(email);
+export async function findUserByEmail(email: string): Promise<User | null> {
+  const record = await getUserRecordByEmail(email);
   if (!record) return null;
-  const { passwordHash: _, ...user } = record;
-  return user;
+  return stripPassword(record);
 }
 
-export function resetPassword(email: string, newPassword: string): boolean {
-  const record = mockUsers.get(email);
+export async function resetPassword(
+  email: string,
+  newPassword: string,
+): Promise<boolean> {
+  const record = await getUserRecordByEmail(email);
   if (!record) return false;
-  record.passwordHash = newPassword;
+  record.passwordHash = await hashPassword(newPassword);
+  await saveUserRecord(record);
   return true;
 }
 
 // ─── Password Reset Tokens ──────────────────────────────────────────────────
 
-interface ResetToken {
-  email: string;
-  createdAt: number;
-  expiresAt: number;
-}
-
-const resetTokens: Map<string, ResetToken> = new Map();
-const RESET_TOKEN_DURATION_MS = 60 * 60 * 1000; // 1 hour
-
-export function createResetToken(email: string): string | null {
-  // Only create token if user exists
-  if (!mockUsers.has(email)) return null;
+export async function createResetToken(
+  email: string,
+): Promise<string | null> {
+  const record = await getUserRecordByEmail(email);
+  if (!record) return null;
 
   const token = crypto.randomUUID();
-  resetTokens.set(token, {
-    email,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + RESET_TOKEN_DURATION_MS,
-  });
+  await kv.set(
+    ["reset_tokens", token],
+    { email },
+    { expireIn: RESET_TOKEN_DURATION_MS },
+  );
   return token;
 }
 
-export function validateResetToken(token: string): string | null {
-  const entry = resetTokens.get(token);
-  if (!entry) return null;
-  if (Date.now() > entry.expiresAt) {
-    resetTokens.delete(token);
-    return null;
-  }
-  return entry.email;
+export async function validateResetToken(
+  token: string,
+): Promise<string | null> {
+  const entry = await kv.get<{ email: string }>(["reset_tokens", token]);
+  if (!entry.value) return null;
+  return entry.value.email;
 }
 
-export function consumeResetToken(token: string): string | null {
-  const email = validateResetToken(token);
+export async function consumeResetToken(
+  token: string,
+): Promise<string | null> {
+  const email = await validateResetToken(token);
   if (email) {
-    resetTokens.delete(token);
+    await kv.delete(["reset_tokens", token]);
   }
   return email;
 }
 
 // ─── Invite Tokens (authorized user invites) ────────────────────────────────
 
-interface InviteToken {
-  primaryUserId: string;
-  email: string;
-  createdAt: number;
-  expiresAt: number;
-}
-
-const inviteTokens: Map<string, InviteToken> = new Map();
-const INVITE_TOKEN_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-
-export function createInviteToken(
+export async function createInviteToken(
   primaryUserId: string,
   email: string,
-): string {
+): Promise<string> {
   const token = crypto.randomUUID();
-  inviteTokens.set(token, {
-    primaryUserId,
-    email,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + INVITE_TOKEN_DURATION_MS,
-  });
+  await kv.set(
+    ["invite_tokens", token],
+    { primaryUserId, email },
+    { expireIn: INVITE_TOKEN_DURATION_MS },
+  );
   return token;
 }
 
-export function validateInviteToken(
+export async function validateInviteToken(
   token: string,
-): { primaryUserId: string; email: string } | null {
-  const entry = inviteTokens.get(token);
-  if (!entry) return null;
-  if (Date.now() > entry.expiresAt) {
-    inviteTokens.delete(token);
-    return null;
-  }
-  return { primaryUserId: entry.primaryUserId, email: entry.email };
+): Promise<{ primaryUserId: string; email: string } | null> {
+  const entry = await kv.get<{ primaryUserId: string; email: string }>(
+    ["invite_tokens", token],
+  );
+  return entry.value;
 }
 
-export function consumeInviteToken(
+export async function consumeInviteToken(
   token: string,
-): { primaryUserId: string; email: string } | null {
-  const result = validateInviteToken(token);
+): Promise<{ primaryUserId: string; email: string } | null> {
+  const result = await validateInviteToken(token);
   if (result) {
-    inviteTokens.delete(token);
+    await kv.delete(["invite_tokens", token]);
   }
   return result;
 }
 
 // ─── Linked Account Resolution ───────────────────────────────────────────────
 
-/**
- * Resolves the effective user ID for data operations.
- * If the user is an authorized user, returns the primary user's ID.
- * Otherwise returns the user's own ID.
- */
-export function resolveUserId(userId: string): string {
-  for (const record of mockUsers.values()) {
-    if (record.id === userId && record.linkedAccountId) {
-      return record.linkedAccountId;
-    }
+export async function resolveUserId(userId: string): Promise<string> {
+  const record = await getUserRecordById(userId);
+  if (record && record.linkedAccountId) {
+    return record.linkedAccountId;
   }
   return userId;
 }
 
-export function getUserById(id: string): User | null {
-  for (const record of mockUsers.values()) {
-    if (record.id === id) {
-      const { passwordHash: _, ...user } = record;
-      // If authorized user, merge in the primary user's children
-      if (user.linkedAccountId) {
-        const primary = getPrimaryUserRecord(user.linkedAccountId);
-        if (primary) {
-          return { ...user, children: primary.children };
-        }
-      }
-      return user;
+export async function getUserById(id: string): Promise<User | null> {
+  const record = await getUserRecordById(id);
+  if (!record) return null;
+  const user = stripPassword(record);
+
+  // If authorized user, merge in the primary user's children
+  if (user.linkedAccountId) {
+    const primary = await getUserRecordById(user.linkedAccountId);
+    if (primary) {
+      return { ...user, children: primary.children };
     }
   }
-  return null;
+  return user;
 }
 
-/** Internal: get the raw record for a primary user by ID */
-function getPrimaryUserRecord(
+export async function markFirstLoginComplete(userId: string): Promise<void> {
+  const record = await getUserRecordById(userId);
+  if (!record) return;
+  record.isFirstLogin = false;
+  await saveUserRecord(record);
+}
+
+// ─── Ownership Verification ──────────────────────────────────────────────────
+
+/** Verify that a child belongs to the given user (or their linked primary) */
+export async function verifyChildOwnership(
   userId: string,
-): (User & { passwordHash: string }) | null {
-  for (const record of mockUsers.values()) {
-    if (record.id === userId) return record;
-  }
-  return null;
+  childId: string,
+): Promise<boolean> {
+  const effectiveId = await resolveUserId(userId);
+  const record = await getUserRecordById(effectiveId);
+  if (!record) return false;
+  return record.children.some((c) => c.id === childId);
 }
 
-export function markFirstLoginComplete(userId: string): void {
-  for (const record of mockUsers.values()) {
-    if (record.id === userId) {
-      record.isFirstLogin = false;
-      break;
-    }
-  }
+// ─── Child Helpers ───────────────────────────────────────────────────────────
+
+export async function getChildById(childId: string): Promise<Child | null> {
+  // Use secondary index to find which user owns this child
+  const emailEntry = await kv.get<string>(["children_by_id", childId]);
+  if (!emailEntry.value) return null;
+
+  const record = await getUserRecordByEmail(emailEntry.value);
+  if (!record) return null;
+
+  return record.children.find((c) => c.id === childId) || null;
 }
 
-export function toggleTask(childId: string, taskId: string): Task | null {
-  for (const record of mockUsers.values()) {
-    for (const child of record.children) {
-      if (child.id === childId) {
-        const task = child.tasks.find((t) => t.id === taskId);
-        if (task) {
-          task.completed = !task.completed;
-          task.completedAt = task.completed ? Date.now() : undefined;
-          if (task.completed) {
-            child.points += task.pointValue;
-          } else {
-            child.points = Math.max(0, child.points - task.pointValue);
-          }
-          return task;
-        }
-      }
-    }
-  }
-  return null;
+/** Internal: find the owner email + record for a child */
+async function getOwnerRecordForChild(
+  childId: string,
+): Promise<UserRecord | null> {
+  const emailEntry = await kv.get<string>(["children_by_id", childId]);
+  if (!emailEntry.value) return null;
+  return await getUserRecordByEmail(emailEntry.value);
 }
 
-export function getChildById(childId: string): Child | null {
-  for (const record of mockUsers.values()) {
-    const child = record.children.find((c) => c.id === childId);
-    if (child) return child;
-  }
-  return null;
-}
-
-export function addChildToUser(
+export async function addChildToUser(
   userId: string,
   name: string,
   avatarIcon?: string,
   avatarUrl?: string,
-): Child | null {
-  const effectiveId = resolveUserId(userId);
-  for (const record of mockUsers.values()) {
-    if (record.id === effectiveId) {
-      const child: Child = {
-        id: `child_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        name,
-        avatarIcon: avatarIcon || undefined,
-        avatarUrl: avatarUrl || undefined,
-        points: 0,
-        streak: 0,
-        tasks: [],
-      };
-      record.children.push(child);
-      return child;
-    }
-  }
-  return null;
+): Promise<Child | null> {
+  const effectiveId = await resolveUserId(userId);
+  const record = await getUserRecordById(effectiveId);
+  if (!record) return null;
+
+  const child: Child = {
+    id: `child_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    name,
+    avatarIcon: avatarIcon || undefined,
+    avatarUrl: avatarUrl || undefined,
+    points: 0,
+    streak: 0,
+    tasks: [],
+  };
+
+  record.children.push(child);
+  await saveUserRecord(record);
+  // Add secondary index for child lookup
+  await kv.set(["children_by_id", child.id], record.email);
+  return child;
 }
 
 // ─── Point & Child Management ───────────────────────────────────────────────
 
-export function adjustPoints(childId: string, delta: number): number | null {
-  for (const record of mockUsers.values()) {
-    for (const child of record.children) {
-      if (child.id === childId) {
-        child.points = Math.max(0, child.points + delta);
-        return child.points;
-      }
-    }
-  }
-  return null;
+export async function adjustPoints(
+  childId: string,
+  delta: number,
+): Promise<number | null> {
+  const record = await getOwnerRecordForChild(childId);
+  if (!record) return null;
+
+  const child = record.children.find((c) => c.id === childId);
+  if (!child) return null;
+
+  child.points = Math.max(0, child.points + delta);
+  await saveUserRecord(record);
+  return child.points;
 }
 
-export function cashInPoints(childId: string): boolean {
-  for (const record of mockUsers.values()) {
-    for (const child of record.children) {
-      if (child.id === childId) {
-        child.points = 0;
-        return true;
-      }
-    }
-  }
-  return false;
+export async function cashInPoints(childId: string): Promise<boolean> {
+  const record = await getOwnerRecordForChild(childId);
+  if (!record) return false;
+
+  const child = record.children.find((c) => c.id === childId);
+  if (!child) return false;
+
+  child.points = 0;
+  await saveUserRecord(record);
+  return true;
 }
 
-export function removeChild(userId: string, childId: string): boolean {
-  const effectiveId = resolveUserId(userId);
-  for (const record of mockUsers.values()) {
-    if (record.id === effectiveId) {
-      const idx = record.children.findIndex((c) => c.id === childId);
-      if (idx !== -1) {
-        record.children.splice(idx, 1);
-        return true;
-      }
-    }
-  }
-  return false;
+export async function removeChild(
+  userId: string,
+  childId: string,
+): Promise<boolean> {
+  const effectiveId = await resolveUserId(userId);
+  const record = await getUserRecordById(effectiveId);
+  if (!record) return false;
+
+  const idx = record.children.findIndex((c) => c.id === childId);
+  if (idx === -1) return false;
+
+  record.children.splice(idx, 1);
+  await saveUserRecord(record);
+  // Remove secondary index
+  await kv.delete(["children_by_id", childId]);
+  return true;
 }
 
-export function updateChild(
+export async function updateChild(
   childId: string,
   name: string,
   avatarIcon?: string,
   avatarUrl?: string,
-): Child | null {
-  for (const record of mockUsers.values()) {
-    for (const child of record.children) {
-      if (child.id === childId) {
-        child.name = name;
-        if (avatarIcon !== undefined) child.avatarIcon = avatarIcon || undefined;
-        if (avatarUrl !== undefined) child.avatarUrl = avatarUrl || undefined;
-        return { ...child };
-      }
-    }
+): Promise<Child | null> {
+  const record = await getOwnerRecordForChild(childId);
+  if (!record) return null;
+
+  const child = record.children.find((c) => c.id === childId);
+  if (!child) return null;
+
+  child.name = name;
+  if (avatarIcon !== undefined) child.avatarIcon = avatarIcon || undefined;
+  if (avatarUrl !== undefined) child.avatarUrl = avatarUrl || undefined;
+
+  await saveUserRecord(record);
+  return { ...child };
+}
+
+export async function toggleTask(
+  childId: string,
+  taskId: string,
+): Promise<Task | null> {
+  const record = await getOwnerRecordForChild(childId);
+  if (!record) return null;
+
+  const child = record.children.find((c) => c.id === childId);
+  if (!child) return null;
+
+  const task = child.tasks.find((t) => t.id === taskId);
+  if (!task) return null;
+
+  task.completed = !task.completed;
+  task.completedAt = task.completed ? Date.now() : undefined;
+  if (task.completed) {
+    child.points += task.pointValue;
+  } else {
+    child.points = Math.max(0, child.points - task.pointValue);
   }
-  return null;
+
+  await saveUserRecord(record);
+  return task;
 }
 
 // ─── Session Helpers ────────────────────────────────────────────────────────
 
-const SESSION_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-export function createSession(user: User): string {
+export async function createSession(user: User): Promise<string> {
   const sessionId = crypto.randomUUID();
-  sessions.set(sessionId, {
+  const session: Session = {
     userId: user.id,
     email: user.email,
     name: user.name,
     createdAt: Date.now(),
     expiresAt: Date.now() + SESSION_DURATION_MS,
-  });
+  };
+  await kv.set(
+    ["sessions", sessionId],
+    session,
+    { expireIn: SESSION_DURATION_MS },
+  );
   return sessionId;
 }
 
-export function getSession(sessionId: string): Session | null {
-  const session = sessions.get(sessionId);
-  if (!session) return null;
-  if (Date.now() > session.expiresAt) {
-    sessions.delete(sessionId);
-    return null;
-  }
-  return session;
+export async function getSession(
+  sessionId: string,
+): Promise<Session | null> {
+  const entry = await kv.get<Session>(["sessions", sessionId]);
+  return entry.value;
 }
 
-export function destroySession(sessionId: string): void {
-  sessions.delete(sessionId);
+export async function destroySession(sessionId: string): Promise<void> {
+  await kv.delete(["sessions", sessionId]);
 }
 
-export function getSessionIdFromCookie(cookieHeader: string | null): string | null {
+// ─── Cookie & Path Helpers (sync -- no KV needed) ───────────────────────────
+
+export function getSessionIdFromCookie(
+  cookieHeader: string | null,
+): string | null {
   if (!cookieHeader) return null;
   const match = cookieHeader.match(/pointy_session=([^;]+)/);
   return match ? match[1] : null;
 }
 
+const IS_PRODUCTION = Deno.env.get("DENO_DEPLOYMENT_ID") !== undefined;
+const COOKIE_SECURE = IS_PRODUCTION ? "; Secure" : "";
+
 export function setSessionCookie(sessionId: string): string {
-  return `pointy_session=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`;
+  return `pointy_session=${sessionId}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${COOKIE_SECURE}`;
 }
 
 export function clearSessionCookie(): string {
-  return `pointy_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+  return `pointy_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${COOKIE_SECURE}`;
 }
 
 // ─── Public Routes Check ────────────────────────────────────────────────────

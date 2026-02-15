@@ -1,7 +1,7 @@
 import { define, validateInviteToken } from "../utils.ts";
 import OnboardForm from "../islands/OnboardForm.tsx";
 
-export default define.page(function OnboardPage(ctx) {
+export default define.page(async function OnboardPage(ctx) {
   const url = new URL(ctx.req.url);
   const token = url.searchParams.get("token") || "";
 
@@ -9,7 +9,7 @@ export default define.page(function OnboardPage(ctx) {
   let inviteEmail = "";
   let validToken = false;
   if (token) {
-    const invite = validateInviteToken(token);
+    const invite = await validateInviteToken(token);
     if (invite) {
       inviteEmail = invite.email;
       validToken = true;

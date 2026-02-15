@@ -36,7 +36,7 @@ export const handler = define.handlers({
       let linkedAccountId: string | undefined;
 
       if (inviteToken) {
-        const invite = consumeInviteToken(inviteToken);
+        const invite = await consumeInviteToken(inviteToken);
         if (!invite) {
           return new Response(
             JSON.stringify({
@@ -61,7 +61,7 @@ export const handler = define.handlers({
       }
 
       // ── Register the user ──────────────────────────────────────────
-      const user = registerUser(email, password, name, linkedAccountId);
+      const user = await registerUser(email, password, name, linkedAccountId);
       if (!user) {
         return new Response(
           JSON.stringify({
@@ -72,23 +72,39 @@ export const handler = define.handlers({
       }
 
       // ── Send invite to authorized user (primary flow only) ─────────
+      let inviteWarning = "";
       if (authorizedEmail && !inviteToken) {
         try {
-          const token = createInviteToken(user.id, authorizedEmail);
+          const token = await createInviteToken(user.id, authorizedEmail);
           const url = new URL(ctx.req.url);
           const inviteUrl = `${url.origin}/onboard?token=${token}`;
-          await sendInviteEmail(authorizedEmail, inviteUrl, name);
+          const sent = await sendInviteEmail(authorizedEmail, inviteUrl, name);
+          if (!sent) {
+            inviteWarning =
+              "Your account was created, but we couldn't send the invite email. " +
+              "Please check that your email configuration (RESEND_API_KEY and FROM_EMAIL) is set up with a verified domain.";
+          }
         } catch (err) {
-          // Log but don't fail registration if invite email fails
           console.error("Failed to send invite email:", err);
+          inviteWarning =
+            "Your account was created, but we couldn't send the invite email. " +
+            "Please check your email configuration.";
         }
       }
 
       // ── Create session and respond ─────────────────────────────────
-      const sessionId = createSession(user);
+      const sessionId = await createSession(user);
+
+      const responseBody: Record<string, unknown> = {
+        success: true,
+        redirect: "/welcome",
+      };
+      if (inviteWarning) {
+        responseBody.inviteWarning = inviteWarning;
+      }
 
       return new Response(
-        JSON.stringify({ success: true, redirect: "/welcome" }),
+        JSON.stringify(responseBody),
         {
           status: 200,
           headers: {
